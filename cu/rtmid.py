@@ -12,6 +12,7 @@ from rtmidi.midiconstants import (
     ALL_SOUND_OFF, CONTROL_CHANGE,
     RESET_ALL_CONTROLLERS
 )
+from cu.aux import knum_to_hz
 
 
 
@@ -157,13 +158,98 @@ def _get_note_data(knum, chnl, vel):
     return non, nof, bend, bend_reset, chnl_, client
 
 
-def note(knum=60, onset=0, dur=1, chnl=1, vel=127):
-    return ("n",) + _get_note_data(knum, chnl, vel) + (onset, dur)
+class _event:
+    tasks = []
+    def __init__(self, onset=0, dur=1, chnl=1, vel=127):
+        self.onset = onset
+        self.dur = dur
+        self.chnl = chnl
+        self.vel = vel
+    def _create(self):
+        pass
 
-def chord(knums=(60, 64, 67), onset=0, dur=1, chnl=1, vel=127):
-    return ["c"] + [note(kn, onset, dur, chnl, vel) for kn in knums]
+class note(_event):
 
-   
+    def __init__(self, knum=60, *args, **kwargs):
+        self.knum = knum
+        super().__init__(*args, **kwargs)
+
+    def _get_data(self):
+        client_id, chnl = _get_clientid_and_chnl(self.chnl)
+        client = _client_registry[client_id]
+        non, nof, bend, bend_reset, chnl_ = _get_msgs(self.knum, self.chnl, self.vel)
+        return non, nof, bend, bend_reset, chnl_, client, self.onset, self.dur
+
+    def _create(self):
+        non,nof,bend,bend_r,c,cl,os,d = self._get_data()
+        _event.tasks.append(asyncio.create_task(
+            _send_non_bend(os,non,bend,cl)
+        ))
+        _event.tasks.append(asyncio.create_task(
+            _send_nof_bend_reset(os,d,nof,bend_r,c,cl)
+        ))
+
+
+class chord(_event):
+
+    def __init__(self, knums: list = [60, 64, 67], *args, **kwargs):
+        self.knums = knums
+        super().__init__(*args, **kwargs)
+        self.notes = self._get_notes()
+
+    def _create(self):
+        for nt in self.notes:
+            nt._create()
+
+    def _get_notes(self):
+        return [note(kn,
+                     onset=self.onset,
+                     dur=self.dur,
+                     chnl=self.chnl,
+                     vel=self.vel) for kn in self.knums]
+
+
+class voice:
+    def __init__(self,
+                 knums: list = [60, 64, 67, 72],
+                 onsets: list = [0, 1, 2, 3],
+                 durs: list = [1, 1, 1, 1],
+                 chnl: int = 1,
+                 vels: list = [127, 127, 127, 127]):
+        self._idx = self._least_idx(knums, onsets, durs, vels)
+        self.knums = knums[:self._idx]
+        self.onsets = onsets[:self._idx]
+        self.durs = durs[:self._idx]
+        self.chnl = chnl
+        self.vels = vels[:self._idx]
+        self.events = self._get_events()
+
+    def _least_idx(self, knums, onsets, durs, vels):
+        return min([len(att) for att in (knums, onsets, durs, vels)])
+
+    def _create(self):
+        for e in self.events:
+            e._create()
+
+    def _get_events(self):
+        evs = []
+        for i, kn in enumerate(self.knums):
+            if isinstance(kn, (int, float)):
+                evs.append(note(kn, self.onsets[i], self.durs[i],
+                               self.chnl, self.vels[i]))
+            elif isinstance(kn, (list, tuple)):
+                evs.append(chord(kn, self.onsets[i], self.durs[i],
+                                self.chnl, self.vels[i]))
+            else:
+                raise TypeError(f"unsupported knum type {kn} {type(kn)}")
+        return evs
+
+# def note(knum=60, onset=0, dur=1, chnl=1, vel=127):
+#     return ("n",) + _get_note_data(knum, chnl, vel) + (onset, dur)
+
+# def chord(knums=(60, 64, 67), onset=0, dur=1, chnl=1, vel=127):
+#     return ["c"] + [note(kn, onset, dur, chnl, vel) for kn in knums]
+
 
 
 
@@ -197,54 +283,16 @@ def _panic():
         time.sleep(0.05)
 
 
-async def rtmidi_proc(events, script):
+async def rtmidi_proc(objs, script):
     """Run the fun, processing the rtmidi calls and cleanup if called from within a script.
     If running from inside a script also dealloc the MIDI_OUT_CLIENT object.
     proc should be given one single
     fun which is your whole composition, don't call it multiple times
     via iteration etc."""
     try:
-        ts=[]
-        for event in events:
-            if event[0] == 'n':
-                non,nof,bend,bend_r,c,cl,os,d=event[1:] # eine note
-                ts.append(asyncio.create_task(
-                    _send_non_bend(os,non,bend,cl)
-                ))
-                ts.append(asyncio.create_task(
-                    _send_nof_bend_reset(os,d,nof,bend_r,c,cl)
-                ))
-            elif event[0] == 'c':
-                for x in event[1:]: # ist ein akkord oder voice?
-                    non,nof,bend,bend_r,c,cl,os,d=x[1:]
-                    ts.append(asyncio.create_task(
-                        _send_non_bend(os,non,bend,cl)
-                    ))
-                    ts.append(asyncio.create_task(
-                        _send_nof_bend_reset(os,d,nof,bend_r,c,cl)
-                    ))
-            else: # voice
-                for x in event:
-                    if x[0] == 'n':
-                        non,nof,bend,bend_r,c,cl,os,d=x[1:] # eine note
-                        ts.append(asyncio.create_task(
-                            _send_non_bend(os,non,bend,cl)
-                        ))
-                        ts.append(asyncio.create_task(
-                            _send_nof_bend_reset(os,d,nof,bend_r,c,cl)
-                        ))
-                    elif x[0] == 'c': # chord in voice
-                        for y in x[1:]:
-                            non,nof,bend,bend_r,c,cl,os,d=y[1:] # note?
-                            ts.append(asyncio.create_task(
-                                _send_non_bend(os,non,bend,cl)
-                            ))
-                            ts.append(asyncio.create_task(
-                                _send_nof_bend_reset(os,d,nof,bend_r,c,cl)
-                            ))
-                    else:
-                        raise ValueError(f"can't proc {x}")
-        await asyncio.gather(*ts)
+        for obj in objs:
+            obj._create()
+        await asyncio.gather(*_event.tasks)
     except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
         _panic()
     except (cu.err.CUZeroHzErr):
