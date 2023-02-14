@@ -158,21 +158,24 @@ def _get_note_data(knum, chnl, vel):
     return non, nof, bend, bend_reset, chnl_, client
 
 
-class _event:
+class _Event:
     tasks = []
-    def __init__(self, onset=0, dur=1, chnl=1, vel=127):
+    def __init__(self, onset=0, dur=1, chnl=1, vel=127, track=0):
         self.onset = onset
         self.dur = dur
         self.chnl = chnl
         self.vel = vel
-    def _create(self):
+        self.track = track
+    def _create_async_task(self):
         pass
 
-class Note(_event):
+
+class Note(_Event):
 
     def __init__(self, knum=60, *args, **kwargs):
         self.knum = knum
         super().__init__(*args, **kwargs)
+        self._data = self._get_data()
 
     def _get_data(self):
         client_id, chnl = _get_clientid_and_chnl(self.chnl)
@@ -180,36 +183,47 @@ class Note(_event):
         non, nof, bend, bend_reset, chnl_ = _get_msgs(self.knum, self.chnl, self.vel)
         return non, nof, bend, bend_reset, chnl_, client, self.onset, self.dur
 
-    def _create(self):
+    def _create_async_task(self):
         non,nof,bend,bend_r,c,cl,os,d = self._get_data()
-        _event.tasks.append(asyncio.create_task(
+        _Event.tasks.append(asyncio.create_task(
             _send_non_bend(os,non,bend,cl)
         ))
-        _event.tasks.append(asyncio.create_task(
+        _Event.tasks.append(asyncio.create_task(
             _send_nof_bend_reset(os,d,nof,bend_r,c,cl)
         ))
 
+    def _add_to_midfile(self, midfile_obj):
+        """Adds note to a midiutil's file object"""
+        non,nof,bend,bend_r,c,cl,os,d=self._data
+        midfile_obj.addNote(self.track, c, non[1], os, d, non[2])
 
-class Chord(_event):
+
+class Chord(_Event):
 
     def __init__(self, knums: list = [60, 64, 67], *args, **kwargs):
         self.knums = knums
         super().__init__(*args, **kwargs)
         self.notes = self._get_notes()
 
-    def _create(self):
+    def _create_async_task(self):
         for nt in self.notes:
-            nt._create()
+            nt._create_async_task()
+
+    def _add_to_midfile(self, midfile_obj):
+        for nt in self.notes:
+            nt._add_to_midfile(midfile_obj)
 
     def _get_notes(self):
         return [Note(kn,
                      onset=self.onset,
                      dur=self.dur,
                      chnl=self.chnl,
-                     vel=self.vel) for kn in self.knums]
+                     vel=self.vel, 
+                     track=self.track) for kn in self.knums]
 
 
 class Voice:
+    _track = 0
     def __init__(self,
                  knums: list = [60, 64, 67, 72],
                  onsets: list = [0, 1, 2, 3],
@@ -223,23 +237,29 @@ class Voice:
         self.chnl = chnl
         self.vels = vels[:self._idx]
         self.events = self._get_events()
+        self._track = Voice._track
+        Voice._track += 1
 
     def _least_idx(self, knums, onsets, durs, vels):
         return min([len(att) for att in (knums, onsets, durs, vels)])
 
-    def _create(self):
+    def _create_async_task(self):
         for x in self.events:
-            x._create()
+            x._create_async_task()
+
+    def _add_to_midfile(self, midfile_obj):
+        for ev in self.events:
+            ev._add_to_midfile(midfile_obj)
 
     def _get_events(self):
         events = []
         for i, kn in enumerate(self.knums):
             if isinstance(kn, (int, float)):
                 events.append(Note(kn, self.onsets[i], self.durs[i],
-                               self.chnl, self.vels[i]))
+                               self.chnl, self.vels[i], track=self._track))
             elif isinstance(kn, (list, tuple)):
                 events.append(Chord(kn, self.onsets[i], self.durs[i],
-                                self.chnl, self.vels[i]))
+                                self.chnl, self.vels[i], track=self._track))
             else:
                 raise TypeError(f"unsupported knum type {kn} {type(kn)}")
         return events
@@ -291,8 +311,8 @@ async def rtmidi_proc(objs, script):
     via iteration etc."""
     try:
         for obj in objs:
-            obj._create()
-        await asyncio.gather(*_event.tasks)
+            obj._create_async_task()
+        await asyncio.gather(*_Event.tasks)
     except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
         _panic()
     except (cu.err.CUZeroHzErr):

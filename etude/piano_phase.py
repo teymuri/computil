@@ -37,7 +37,7 @@ def piano1(trope, stay, move, amp, chan):
         print(i)
         x = i % tlen
         k = trope[x]
-        notes.append(cu.note(onset=cu.pret(rate*i), knum=k, 
+        notes.append(cu.Note(onset=cu.pret(rate*i), knum=k, 
                             dur=rate * 1.5, vel=amp,
                             chnl=chan))
         i += 1
@@ -69,7 +69,7 @@ def piano2(trope, stay, move, amp, chan):
         k = trope[i % tlen]
         c = curve[i % clen]
         notes.append(
-            cu.note(
+            cu.Note(
                 knum=k, onset=(o),
                 dur=rate * 1.5, vel=amp, chnl=chan
             )
