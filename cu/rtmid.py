@@ -168,7 +168,7 @@ class _event:
     def _create(self):
         pass
 
-class note(_event):
+class Note(_event):
 
     def __init__(self, knum=60, *args, **kwargs):
         self.knum = knum
@@ -190,7 +190,7 @@ class note(_event):
         ))
 
 
-class chord(_event):
+class Chord(_event):
 
     def __init__(self, knums: list = [60, 64, 67], *args, **kwargs):
         self.knums = knums
@@ -202,14 +202,14 @@ class chord(_event):
             nt._create()
 
     def _get_notes(self):
-        return [note(kn,
+        return [Note(kn,
                      onset=self.onset,
                      dur=self.dur,
                      chnl=self.chnl,
                      vel=self.vel) for kn in self.knums]
 
 
-class voice:
+class Voice:
     def __init__(self,
                  knums: list = [60, 64, 67, 72],
                  onsets: list = [0, 1, 2, 3],
@@ -228,21 +228,21 @@ class voice:
         return min([len(att) for att in (knums, onsets, durs, vels)])
 
     def _create(self):
-        for e in self.events:
-            e._create()
+        for x in self.events:
+            x._create()
 
     def _get_events(self):
-        evs = []
+        events = []
         for i, kn in enumerate(self.knums):
             if isinstance(kn, (int, float)):
-                evs.append(note(kn, self.onsets[i], self.durs[i],
+                events.append(Note(kn, self.onsets[i], self.durs[i],
                                self.chnl, self.vels[i]))
             elif isinstance(kn, (list, tuple)):
-                evs.append(chord(kn, self.onsets[i], self.durs[i],
+                events.append(Chord(kn, self.onsets[i], self.durs[i],
                                 self.chnl, self.vels[i]))
             else:
                 raise TypeError(f"unsupported knum type {kn} {type(kn)}")
-        return evs
+        return events
 
 # def note(knum=60, onset=0, dur=1, chnl=1, vel=127):
 #     return ("n",) + _get_note_data(knum, chnl, vel) + (onset, dur)
